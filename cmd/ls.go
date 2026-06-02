@@ -122,7 +122,7 @@ func printSkills(skills []library.Skill, bundles map[string][]string, st *state.
 		}
 		src := style.Faint("local")
 		if s.External {
-			src = style.Faint("ext: " + s.Repo)
+			src = style.Faint("pack: " + s.Repo)
 		}
 		rows = append(rows, []string{s.ID, bsStr, mark, src})
 	}

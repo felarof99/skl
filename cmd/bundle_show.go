@@ -87,7 +87,7 @@ func printBundleSkills(name string, ids []string, byID map[string]library.Skill,
 		}
 		src := style.Faint("local")
 		if s, ok := byID[id]; ok && s.External {
-			src = style.Faint("ext: " + s.Repo)
+			src = style.Faint("pack: " + s.Repo)
 		} else if !ok {
 			src = style.Faint("missing")
 		}

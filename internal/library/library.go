@@ -62,78 +62,74 @@ func EnsureLibrary() error {
 	if err != nil {
 		return err
 	}
-	external, err := ExternalPath()
-	if err != nil {
-		return err
-	}
-	for _, d := range []string{skills, external} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			return fmt.Errorf("creating %s: %w", d, err)
-		}
+	if err := os.MkdirAll(skills, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", skills, err)
 	}
 	return nil
 }
 
+// Skills walks the single skills/ directory. A subdir with a SKILL.md is a loose
+// skill (ID = its name). A subdir without one is a "pack" whose children are the
+// skills (ID = pack/skill). The legacy external/ directory, if still present, is
+// scanned the same way for back-compat.
 func Skills() ([]Skill, error) {
 	if err := EnsureLibrary(); err != nil {
 		return nil, err
 	}
-	var out []Skill
-
 	skillsRoot, _ := SkillsPath()
-	entries, err := os.ReadDir(skillsRoot)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+	externalRoot, _ := ExternalPath()
+	out := append(scanRoot(skillsRoot), scanRoot(externalRoot)...)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// scanRoot returns every skill directly under root (loose skills) and one level
+// down inside pack subdirs. A missing root yields no skills.
+func scanRoot(root string) []Skill {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
 	}
+	var out []Skill
 	for _, e := range entries {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		dir := filepath.Join(skillsRoot, e.Name())
+		dir := filepath.Join(root, e.Name())
+		if hasSkillManifest(dir) {
+			out = append(out, Skill{ID: e.Name(), DirName: e.Name(), SrcPath: dir})
+			continue
+		}
+		// no manifest at this level → treat the dir as a pack of skills
+		out = append(out, scanPack(dir, e.Name())...)
+	}
+	return out
+}
+
+// scanPack returns the skills inside a pack subdir, namespaced as pack/skill.
+func scanPack(packDir, packName string) []Skill {
+	children, err := os.ReadDir(packDir)
+	if err != nil {
+		return nil
+	}
+	var out []Skill
+	for _, c := range children {
+		if !c.IsDir() || strings.HasPrefix(c.Name(), ".") {
+			continue
+		}
+		dir := filepath.Join(packDir, c.Name())
 		if !hasSkillManifest(dir) {
 			continue
 		}
 		out = append(out, Skill{
-			ID:      e.Name(),
-			DirName: e.Name(),
-			SrcPath: dir,
+			ID:       packName + "/" + c.Name(),
+			DirName:  c.Name(),
+			SrcPath:  dir,
+			External: true,
+			Repo:     packName,
 		})
 	}
-
-	externalRoot, _ := ExternalPath()
-	repoEntries, err := os.ReadDir(externalRoot)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	for _, repo := range repoEntries {
-		if !repo.IsDir() || strings.HasPrefix(repo.Name(), ".") {
-			continue
-		}
-		repoDir := filepath.Join(externalRoot, repo.Name())
-		skillEntries, err := os.ReadDir(repoDir)
-		if err != nil {
-			continue
-		}
-		for _, s := range skillEntries {
-			if !s.IsDir() || strings.HasPrefix(s.Name(), ".") {
-				continue
-			}
-			dir := filepath.Join(repoDir, s.Name())
-			if !hasSkillManifest(dir) {
-				continue
-			}
-			out = append(out, Skill{
-				ID:       repo.Name() + "/" + s.Name(),
-				DirName:  s.Name(),
-				SrcPath:  dir,
-				External: true,
-				Repo:     repo.Name(),
-			})
-		}
-	}
-
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out, nil
+	return out
 }
 
 func FindSkill(id string) (*Skill, error) {

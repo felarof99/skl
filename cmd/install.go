@@ -18,7 +18,7 @@ func init() {
 	installCmd.Flags().String("bundle", "", "Add imported skills to this bundle (creates if absent)")
 	installCmd.Flags().String("name", "", "Override namespace name (namespaced mode only)")
 	installCmd.Flags().String("subdir", "", "Scan this subdirectory of the source (e.g., 'skills')")
-	installCmd.Flags().String("prefix", "", "Install flat as library/skills/<prefix>-<skill>/ (instead of namespaced library/external/<ns>/<skill>/)")
+	installCmd.Flags().String("prefix", "", "Install flat as library/skills/<prefix>-<skill>/ (instead of a pack at library/skills/<ns>/<skill>/)")
 	installCmd.Flags().Bool("force", false, "Overwrite existing skills / namespaces")
 	installCmd.Flags().Bool("no-bundle", false, "Don't auto-add installed skills to a bundle (leave them in inbox)")
 	rootCmd.AddCommand(installCmd)
@@ -32,10 +32,10 @@ var installCmd = &cobra.Command{
 
 Two install modes:
 
-  Namespaced (default)
+  Pack (default)
       skl install https://github.com/obra/superpowers --subdir skills
-      → clones to library/external/superpowers/, skills referenced as
-        superpowers/<skill> in bundles.yaml.
+      → installs to library/skills/superpowers/ as a pack, skills referenced
+        as superpowers/<skill> in bundles.yaml.
 
   Flat with prefix
       skl install /path/to/repo --subdir skills --prefix supa --bundle sp
@@ -179,7 +179,7 @@ func resolveInstallSource(src string, isLocal bool, prefix, subdir, nameOverride
 		if ns == "" {
 			return "", "", "", fmt.Errorf("could not derive a namespace from %q (use --name)", src)
 		}
-		extDir, err := library.ExternalPath()
+		extDir, err := library.SkillsPath()
 		if err != nil {
 			return "", "", "", err
 		}
@@ -269,7 +269,7 @@ func installNamespaced(skillSrcs []string, nsFromClone string, isLocal bool, src
 		return nil, "", fmt.Errorf("could not derive a namespace (use --name)")
 	}
 
-	extDir, err := library.ExternalPath()
+	extDir, err := library.SkillsPath()
 	if err != nil {
 		return nil, "", err
 	}

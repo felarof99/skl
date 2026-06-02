@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"skl/internal/library"
 	"skl/internal/picker"
@@ -16,21 +17,24 @@ func init() {
 }
 
 var bundleUpCmd = &cobra.Command{
-	Use:         "bundle-up [folder...]",
+	Use:         "bundle-up [pack...]",
 	Annotations: map[string]string{"group": "Library:"},
-	Short:       "Make a bundle from an external folder's skills (fzf when no args)",
-	Long: `Turn an external folder (library/external/<folder>/) into a loadable bundle
-named after the folder, containing every skill inside it. Merges into the
-bundle if it already exists. With no args, fzf-pick the folder(s).`,
+	Short:       "Make a bundle from a pack's skills (fzf when no args)",
+	Long: `Turn a pack (a subfolder of skills with its own skills inside, e.g.
+library/skills/<pack>/) into a loadable bundle named after the pack. Merges
+into the bundle if it already exists. With no args, fzf-pick the pack(s).
+
+Note: this works on packs, not on existing bundles. To edit a bundle use
+'skl bundle add/remove'.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		folders, err := externalFolders()
 		if err != nil {
 			return err
 		}
 		if len(folders) == 0 {
-			return fmt.Errorf("no folders found in library/external/")
+			return fmt.Errorf("no packs found — install one with `skl install <url|path>`")
 		}
-		// resolve which folder(s) to bundle up
+		// resolve which pack(s) to bundle up
 		chosen := args
 		if len(chosen) == 0 {
 			chosen, err = pickFolders(folders)
@@ -45,7 +49,7 @@ bundle if it already exists. With no args, fzf-pick the folder(s).`,
 		for _, f := range chosen {
 			ids, ok := folders[f]
 			if !ok {
-				return fmt.Errorf("no folder %q under library/external/", f)
+				return fmt.Errorf("%q is not a pack (available packs: %s)", f, strings.Join(sortedKeys(folders), ", "))
 			}
 			if err := rejectReservedBundle(f); err != nil {
 				return err
@@ -66,7 +70,16 @@ bundle if it already exists. With no args, fzf-pick the folder(s).`,
 	},
 }
 
-// externalFolders maps each external namespace folder to its skill IDs.
+func sortedKeys(m map[string][]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// externalFolders maps each pack folder to its skill IDs.
 func externalFolders() (map[string][]string, error) {
 	skills, err := library.Skills()
 	if err != nil {
