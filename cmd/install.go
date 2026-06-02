@@ -20,6 +20,7 @@ func init() {
 	installCmd.Flags().String("subdir", "", "Scan this subdirectory of the source (e.g., 'skills')")
 	installCmd.Flags().String("prefix", "", "Install flat as library/skills/<prefix>-<skill>/ (instead of namespaced library/external/<ns>/<skill>/)")
 	installCmd.Flags().Bool("force", false, "Overwrite existing skills / namespaces")
+	installCmd.Flags().Bool("no-bundle", false, "Don't auto-add installed skills to a bundle (leave them in inbox)")
 	rootCmd.AddCommand(installCmd)
 }
 
@@ -41,11 +42,17 @@ Two install modes:
       → copies each skill into library/skills/supa-<skill>/, so they appear
         as native skills. Bundle 'sp' lists them as 'supa-<skill>'.
 
+By default the installed skills are added to a bundle named after the source
+(the namespace, or the --prefix), so they show up immediately in 'skl load'.
+Use --bundle to pick a different/existing bundle, or --no-bundle to leave them
+in the 'inbox' catch-all.
+
 Flags:
   --subdir <path>   Scan a subdirectory of the source for skills (many repos
                     nest skills under 'skills/').
   --prefix <name>   Flatten into library/skills/ with <prefix>- on each name.
-  --bundle <name>   Add all imported skills to this bundle.
+  --bundle <name>   Add all imported skills to this bundle (default: source name).
+  --no-bundle       Don't auto-bundle; leave installed skills in inbox.
   --name <name>     Override the namespace dir name (no effect with --prefix).
   --force           Overwrite an existing namespace or prefixed skill.`,
 	Args: cobra.ExactArgs(1),
@@ -55,6 +62,7 @@ Flags:
 		subdir, _ := cmd.Flags().GetString("subdir")
 		prefix, _ := cmd.Flags().GetString("prefix")
 		force, _ := cmd.Flags().GetBool("force")
+		noBundle, _ := cmd.Flags().GetBool("no-bundle")
 		if bundleName != "" {
 			if err := rejectReservedBundle(bundleName); err != nil {
 				return err
@@ -86,10 +94,11 @@ Flags:
 		}
 
 		var added []string
+		var nsUsed string
 		if prefix != "" {
 			added, err = installFlatPrefixed(skillSrcs, prefix, force)
 		} else {
-			added, err = installNamespaced(skillSrcs, nsFromClone, isLocal, src, nameOverride, force)
+			added, nsUsed, err = installNamespaced(skillSrcs, nsFromClone, isLocal, src, nameOverride, force)
 		}
 		if err != nil {
 			return err
@@ -101,21 +110,52 @@ Flags:
 			fmt.Printf("  %s\n", id)
 		}
 
-		if bundleName != "" && len(added) > 0 {
-			bundles, err := library.Bundles()
-			if err != nil {
+		// Auto-bundle so the skills show up in `skl load` right away.
+		effBundle := bundleName
+		if effBundle == "" && !noBundle {
+			effBundle = deriveBundleName(prefix, nsUsed)
+		}
+		if effBundle != "" && len(added) > 0 {
+			if err := addSkillsToBundle(effBundle, added); err != nil {
 				return err
 			}
-			merged := append([]string{}, bundles[bundleName]...)
-			merged = append(merged, added...)
-			bundles[bundleName] = merged
-			if err := library.WriteBundles(bundles); err != nil {
-				return err
-			}
-			fmt.Printf("%s skills to bundle %q\n", style.OK("added"), bundleName)
+			fmt.Printf("%s skills to bundle %q\n", style.OK("added"), effBundle)
+			fmt.Printf("%s run %s to activate\n", style.Faint("→"), style.Cmd("skl load "+effBundle))
+		} else if len(added) > 0 {
+			// Not bundled: they sit in the inbox catch-all.
+			fmt.Printf("%s skills are in %s — run %s to bundle them\n",
+				style.Faint("→"), style.Faint("inbox"), style.Cmd("skl bundle add <name> <skill>"))
 		}
 		return nil
 	},
+}
+
+// deriveBundleName picks the default bundle for an install when --bundle is
+// absent: the --prefix if flat, else the namespace dir. Sanitized; returns ""
+// when it can't or shouldn't auto-bundle (empty, or the reserved inbox name).
+func deriveBundleName(prefix, namespace string) string {
+	raw := prefix
+	if raw == "" {
+		raw = namespace
+	}
+	name := strings.ToLower(strings.TrimSpace(raw))
+	name = strings.ReplaceAll(name, " ", "-")
+	if name == library.ReservedInboxBundle {
+		return ""
+	}
+	return name
+}
+
+// addSkillsToBundle appends ids to a bundle (creating it if absent), dedup via WriteBundles.
+func addSkillsToBundle(name string, ids []string) error {
+	bundles, err := library.Bundles()
+	if err != nil {
+		return err
+	}
+	merged := append([]string{}, bundles[name]...)
+	merged = append(merged, ids...)
+	bundles[name] = merged
+	return library.WriteBundles(bundles)
 }
 
 // resolveInstallSource returns the root directory to scan, an optional temp dir
@@ -204,13 +244,13 @@ func installFlatPrefixed(skillSrcs []string, prefix string, force bool) ([]strin
 	return added, nil
 }
 
-func installNamespaced(skillSrcs []string, nsFromClone string, isLocal bool, src, nameOverride string, force bool) ([]string, error) {
+func installNamespaced(skillSrcs []string, nsFromClone string, isLocal bool, src, nameOverride string, force bool) ([]string, string, error) {
 	if nsFromClone != "" {
 		var added []string
 		for _, sd := range skillSrcs {
 			added = append(added, nsFromClone+"/"+filepath.Base(sd))
 		}
-		return added, nil
+		return added, nsFromClone, nil
 	}
 
 	ns := nameOverride
@@ -218,7 +258,7 @@ func installNamespaced(skillSrcs []string, nsFromClone string, isLocal bool, src
 		if isLocal {
 			abs, err := filepath.Abs(src)
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			ns = filepath.Base(abs)
 		} else {
@@ -226,24 +266,24 @@ func installNamespaced(skillSrcs []string, nsFromClone string, isLocal bool, src
 		}
 	}
 	if ns == "" {
-		return nil, fmt.Errorf("could not derive a namespace (use --name)")
+		return nil, "", fmt.Errorf("could not derive a namespace (use --name)")
 	}
 
 	extDir, err := library.ExternalPath()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	nsDir := filepath.Join(extDir, ns)
 	if _, err := os.Stat(nsDir); err == nil {
 		if !force {
-			return nil, fmt.Errorf("namespace %q already exists; use --force or --name", ns)
+			return nil, "", fmt.Errorf("namespace %q already exists; use --force or --name", ns)
 		}
 		if err := os.RemoveAll(nsDir); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	if err := os.MkdirAll(nsDir, 0o755); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	var added []string
@@ -251,11 +291,11 @@ func installNamespaced(skillSrcs []string, nsFromClone string, isLocal bool, src
 		name := filepath.Base(sd)
 		dst := filepath.Join(nsDir, name)
 		if err := copyDir(sd, dst); err != nil {
-			return nil, fmt.Errorf("copying %s: %w", name, err)
+			return nil, "", fmt.Errorf("copying %s: %w", name, err)
 		}
 		added = append(added, ns+"/"+name)
 	}
-	return added, nil
+	return added, ns, nil
 }
 
 func findSkillDirs(root string) ([]string, error) {
