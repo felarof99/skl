@@ -262,6 +262,89 @@ func TestLoadPlanLoadsFolderEntryWithPrefix(t *testing.T) {
 	}
 }
 
+func TestLoadPlanInfersBundleFolderForSkillEntries(t *testing.T) {
+	setupHome(t)
+
+	skillsRoot, err := library.SkillsPath()
+	if err != nil {
+		t.Fatalf("SkillsPath: %v", err)
+	}
+	writeNamedSkillTree(t, filepath.Join(skillsRoot, "dev", "dev1-start"), "dev1-start", "start")
+	writeNamedSkillTree(t, filepath.Join(skillsRoot, "dev", "dev2-design"), "dev2-design", "design")
+
+	lib, err := library.Skills()
+	if err != nil {
+		t.Fatalf("Skills: %v", err)
+	}
+	st := &state.State{Version: 1, Loaded: map[string]state.LoadEntry{}}
+	plan, err := bundle.PlanLoadEntries("dev", []library.BundleEntry{
+		{Skill: "dev1-start"},
+		{Skill: "dev2-design"},
+	}, lib, st)
+	if err != nil {
+		t.Fatalf("PlanLoadEntries: %v", err)
+	}
+	gotActions := actionNames(plan.Actions)
+	wantActions := []string{
+		"dev/dev1-start:dev1-start",
+		"dev/dev2-design:dev2-design",
+	}
+	if !reflect.DeepEqual(gotActions, wantActions) {
+		t.Fatalf("actions mismatch\ngot:  %#v\nwant: %#v", gotActions, wantActions)
+	}
+}
+
+func TestLoadPlanAppliesPrefixDirectiveToBundleRelativeSkills(t *testing.T) {
+	setupHome(t)
+
+	skillsRoot, err := library.SkillsPath()
+	if err != nil {
+		t.Fatalf("SkillsPath: %v", err)
+	}
+	writeNamedSkillTree(t, filepath.Join(skillsRoot, "thinkhats", "1-blue-open"), "1-blue-open", "open")
+	writeNamedSkillTree(t, filepath.Join(skillsRoot, "thinkhats", "2-white"), "2-white", "white")
+
+	lib, err := library.Skills()
+	if err != nil {
+		t.Fatalf("Skills: %v", err)
+	}
+	st := &state.State{Version: 1, Loaded: map[string]state.LoadEntry{}}
+	plan, err := bundle.PlanLoadEntries("thinkhats", []library.BundleEntry{
+		{Prefix: "thinkhats-nithin"},
+		{Skill: "1-blue-open"},
+		{Skill: "2-white"},
+	}, lib, st)
+	if err != nil {
+		t.Fatalf("PlanLoadEntries: %v", err)
+	}
+	gotActions := actionNames(plan.Actions)
+	wantActions := []string{
+		"thinkhats-nithin-1-blue-open:thinkhats-nithin-1-blue-open",
+		"thinkhats-nithin-2-white:thinkhats-nithin-2-white",
+	}
+	if !reflect.DeepEqual(gotActions, wantActions) {
+		t.Fatalf("actions mismatch\ngot:  %#v\nwant: %#v", gotActions, wantActions)
+	}
+
+	newCount, reloaded, err := applyLoadPlan(plan, st)
+	if err != nil {
+		t.Fatalf("applyLoadPlan: %v", err)
+	}
+	if newCount != 2 || reloaded != 0 {
+		t.Fatalf("counts mismatch: new=%d reloaded=%d", newCount, reloaded)
+	}
+
+	liveRoot, err := live.LivePath()
+	if err != nil {
+		t.Fatalf("LivePath: %v", err)
+	}
+	for _, name := range []string{"thinkhats-nithin-1-blue-open", "thinkhats-nithin-2-white"} {
+		if got := readSkillName(t, filepath.Join(liveRoot, name)); got != name {
+			t.Fatalf("%s copied manifest name = %q, want %q", name, got, name)
+		}
+	}
+}
+
 func setupHome(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())

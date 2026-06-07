@@ -107,6 +107,7 @@ func printSkills(skills []library.Skill, bundles map[string][]string, st *state.
 			skillToBundles[id] = append(skillToBundles[id], b)
 		}
 	}
+	loadedSources := loadedSourcePaths(st)
 
 	var rows [][]string
 	for _, s := range skills {
@@ -117,7 +118,7 @@ func printSkills(skills []library.Skill, bundles map[string][]string, st *state.
 			bsStr = style.Faint(library.ReservedInboxBundle)
 		}
 		mark := style.Faint("—")
-		if _, ok := st.Loaded[s.ID]; ok {
+		if skillLoaded(s, st, loadedSources) {
 			mark = style.OK("loaded")
 		}
 		src := style.Faint("local")

@@ -39,9 +39,14 @@ func PlanLoad(bundleName string, skills []string, lib []library.Skill, st *state
 func PlanLoadEntries(bundleName string, entries []library.BundleEntry, lib []library.Skill, st *state.State) (LoadPlan, error) {
 	plan := LoadPlan{Bundle: bundleName}
 	index := indexLibrary(lib)
+	activePrefix := ""
 
 	for _, entry := range entries {
-		expanded, err := expandBundleEntry(bundleName, entry, index)
+		if isPrefixDirective(entry) {
+			activePrefix = entry.Prefix
+			continue
+		}
+		expanded, err := expandBundleEntry(bundleName, entry, index, activePrefix)
 		if err != nil {
 			return plan, err
 		}
@@ -53,20 +58,30 @@ func PlanLoadEntries(bundleName string, entries []library.BundleEntry, lib []lib
 	return plan, nil
 }
 
-func expandBundleEntry(bundleName string, entry library.BundleEntry, index map[string]library.Skill) ([]library.Skill, error) {
+func isPrefixDirective(entry library.BundleEntry) bool {
+	return entry.Skill == "" && entry.Folder == "" && entry.Prefix != ""
+}
+
+func expandBundleEntry(bundleName string, entry library.BundleEntry, index map[string]library.Skill, activePrefix string) ([]library.Skill, error) {
 	switch {
 	case entry.Skill != "":
-		s, ok := index[entry.Skill]
+		s, ok := resolveBundleSkill(bundleName, entry.Skill, index)
 		if !ok {
 			return nil, fmt.Errorf("bundle %q references unknown skill %q", bundleName, entry.Skill)
 		}
-		prefix := bundleName
+		prefix := activePrefix
 		if entry.Prefix != "" {
 			prefix = entry.Prefix
 		}
-		return expandRepoSkill(prefix, s)
+		if prefix != "" {
+			return expandPrefixedSkill(prefix, s)
+		}
+		return expandRepoSkill(bundleName, s)
 	case entry.Folder != "":
-		prefix := entry.Prefix
+		prefix := activePrefix
+		if entry.Prefix != "" {
+			prefix = entry.Prefix
+		}
 		if prefix == "" {
 			prefix = bundleName
 		}
@@ -74,6 +89,16 @@ func expandBundleEntry(bundleName string, entry library.BundleEntry, index map[s
 	default:
 		return nil, fmt.Errorf("bundle %q contains empty entry", bundleName)
 	}
+}
+
+func resolveBundleSkill(bundleName, id string, index map[string]library.Skill) (library.Skill, bool) {
+	if bundleName != "" && !strings.Contains(id, "/") {
+		if s, ok := index[bundleName+"/"+id]; ok {
+			return s, true
+		}
+	}
+	s, ok := index[id]
+	return s, ok
 }
 
 func PlanUnload(bundleName string, st *state.State) UnloadPlan {
@@ -148,6 +173,39 @@ func expandRepoSkill(bundleName string, skill library.Skill) ([]library.Skill, e
 		})
 	}
 	return out, nil
+}
+
+func expandPrefixedSkill(prefix string, skill library.Skill) ([]library.Skill, error) {
+	manifests, err := skillManifestDirs(skill.SrcPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(manifests) > 1 {
+		return expandRepoSkill(prefix, skill)
+	}
+	if len(manifests) == 0 {
+		return nil, fmt.Errorf("skill %q contains no manifests", skill.ID)
+	}
+	name := prefixedSingleSkillName(prefix, skill, manifests[0])
+	return []library.Skill{{
+		ID:           name,
+		DirName:      name,
+		SrcPath:      manifests[0].dir,
+		External:     skill.External,
+		Repo:         skill.Repo,
+		NameOverride: name,
+	}}, nil
+}
+
+func prefixedSingleSkillName(prefix string, skill library.Skill, manifest manifestDir) string {
+	suffix := manifest.name
+	if suffix == "" {
+		suffix = skill.DirName
+	}
+	if suffix == prefix || strings.HasPrefix(suffix, prefix+"-") {
+		return suffix
+	}
+	return prefix + "-" + suffix
 }
 
 func expandFolderEntry(bundleName string, entry library.BundleEntry, prefix string) ([]library.Skill, error) {

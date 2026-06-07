@@ -110,6 +110,100 @@ func TestBundlesParsesFolderEntryWithPrefix(t *testing.T) {
 	}
 }
 
+func TestBundlesInfersBundleFolderForSkillEntries(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	skillsRoot, err := SkillsPath()
+	if err != nil {
+		t.Fatalf("SkillsPath: %v", err)
+	}
+	writeSkill(t, filepath.Join(skillsRoot, "dev", "dev1-start"))
+	writeSkill(t, filepath.Join(skillsRoot, "dev", "dev2-design"))
+	writeSkill(t, filepath.Join(skillsRoot, "plain"))
+
+	bundlesPath, err := BundlesPath()
+	if err != nil {
+		t.Fatalf("BundlesPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(bundlesPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(bundlesPath), err)
+	}
+	data := `bundles:
+  dev:
+    - dev1-start
+    - dev2-design
+`
+	if err := os.WriteFile(bundlesPath, []byte(data), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", bundlesPath, err)
+	}
+
+	bundles, err := Bundles()
+	if err != nil {
+		t.Fatalf("Bundles: %v", err)
+	}
+	want := map[string][]string{
+		"dev":               {"dev/dev1-start", "dev/dev2-design"},
+		ReservedInboxBundle: {"plain"},
+	}
+	if !reflect.DeepEqual(bundles, want) {
+		t.Fatalf("Bundles mismatch\ngot:  %#v\nwant: %#v", bundles, want)
+	}
+}
+
+func TestBundlesParsesPrefixDirectiveForBundleRelativeSkills(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	skillsRoot, err := SkillsPath()
+	if err != nil {
+		t.Fatalf("SkillsPath: %v", err)
+	}
+	writeSkill(t, filepath.Join(skillsRoot, "thinkhats", "1-blue-open"))
+	writeSkill(t, filepath.Join(skillsRoot, "thinkhats", "2-white"))
+
+	bundlesPath, err := BundlesPath()
+	if err != nil {
+		t.Fatalf("BundlesPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(bundlesPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(bundlesPath), err)
+	}
+	data := `bundles:
+  thinkhats:
+    - prefix: thinkhats-nithin
+    - 1-blue-open
+    - 2-white
+`
+	if err := os.WriteFile(bundlesPath, []byte(data), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", bundlesPath, err)
+	}
+
+	entries, err := BundleEntries()
+	if err != nil {
+		t.Fatalf("BundleEntries: %v", err)
+	}
+	wantEntries := []BundleEntry{
+		{Prefix: "thinkhats-nithin"},
+		{Skill: "1-blue-open"},
+		{Skill: "2-white"},
+	}
+	if got := entries["thinkhats"]; !reflect.DeepEqual(got, wantEntries) {
+		t.Fatalf("BundleEntries mismatch\ngot:  %#v\nwant: %#v", got, wantEntries)
+	}
+
+	bundles, err := Bundles()
+	if err != nil {
+		t.Fatalf("Bundles: %v", err)
+	}
+	wantBundles := map[string][]string{
+		"thinkhats": {"thinkhats/1-blue-open", "thinkhats/2-white"},
+	}
+	if !reflect.DeepEqual(bundles, wantBundles) {
+		t.Fatalf("Bundles mismatch\ngot:  %#v\nwant: %#v", bundles, wantBundles)
+	}
+}
+
 func TestWriteBundlesPreservesUnchangedFolderEntry(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

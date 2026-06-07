@@ -80,13 +80,15 @@ func printBundleSkills(name string, ids []string, byID map[string]library.Skill,
 	}
 
 	var rows [][]string
+	loadedSources := loadedSourcePaths(st)
 	for _, id := range ids {
 		mark := style.Faint("—")
-		if _, ok := st.Loaded[id]; ok {
+		s, ok := byID[id]
+		if ok && skillLoaded(s, st, loadedSources) {
 			mark = style.OK("loaded")
 		}
 		src := style.Faint("local")
-		if s, ok := byID[id]; ok && s.External {
+		if ok && s.External {
 			src = style.Faint("pack: " + s.Repo)
 		} else if !ok {
 			src = style.Faint("missing")

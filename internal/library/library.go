@@ -47,8 +47,11 @@ func (e *BundleEntry) UnmarshalYAML(value *yaml.Node) error {
 		if raw.Skill != "" && raw.Folder != "" {
 			return fmt.Errorf("bundle entry cannot set both skill and folder")
 		}
-		if raw.Skill == "" && raw.Folder == "" {
-			return fmt.Errorf("bundle entry must set skill or folder")
+		if raw.Skill == "" && raw.Folder == "" && raw.Prefix == "" {
+			return fmt.Errorf("bundle entry must set skill, folder, or prefix")
+		}
+		if raw.Skill == "" && raw.Folder == "" && len(raw.Skills) > 0 {
+			return fmt.Errorf("bundle entry cannot set skills without folder")
 		}
 		*e = BundleEntry(raw)
 		return nil
@@ -199,7 +202,7 @@ func BundleEntries() (map[string][]BundleEntry, error) {
 		if name == ReservedInboxBundle {
 			continue
 		}
-		for _, id := range SourceIDsForEntries(ids) {
+		for _, id := range SourceIDsForBundleEntries(name, ids, skills) {
 			assigned[id] = true
 		}
 	}
@@ -221,19 +224,31 @@ func Bundles() (map[string][]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	skills, err := Skills()
+	if err != nil {
+		return nil, err
+	}
 	out := make(map[string][]string, len(entries))
 	for name, ids := range entries {
-		out[name] = SourceIDsForEntries(ids)
+		out[name] = SourceIDsForBundleEntries(name, ids, skills)
 	}
 	return out, nil
 }
 
 func SourceIDsForEntries(entries []BundleEntry) []string {
+	return sourceIDsForEntries("", entries, nil)
+}
+
+func SourceIDsForBundleEntries(bundleName string, entries []BundleEntry, skills []Skill) []string {
+	return sourceIDsForEntries(bundleName, entries, skillIDSet(skills))
+}
+
+func sourceIDsForEntries(bundleName string, entries []BundleEntry, known map[string]bool) []string {
 	var out []string
 	for _, entry := range entries {
 		switch {
 		case entry.Skill != "":
-			out = append(out, entry.Skill)
+			out = append(out, resolveBundleRelativeID(bundleName, entry.Skill, known))
 		case entry.Folder != "":
 			if len(entry.Skills) > 0 {
 				for _, skill := range entry.Skills {
@@ -245,6 +260,28 @@ func SourceIDsForEntries(entries []BundleEntry) []string {
 		}
 	}
 	return dedupSorted(out)
+}
+
+func skillIDSet(skills []Skill) map[string]bool {
+	if len(skills) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(skills))
+	for _, skill := range skills {
+		out[skill.ID] = true
+	}
+	return out
+}
+
+func resolveBundleRelativeID(bundleName, id string, known map[string]bool) string {
+	if bundleName == "" || strings.Contains(id, "/") {
+		return id
+	}
+	candidate := bundleName + "/" + id
+	if known != nil && known[candidate] {
+		return candidate
+	}
+	return id
 }
 
 func BundleEntriesForSkills(ids []string) []BundleEntry {
@@ -283,12 +320,16 @@ func WriteBundles(b map[string][]string) error {
 	}
 
 	current, _ := readPersistedBundleEntries()
+	libSkills, err := Skills()
+	if err != nil {
+		return err
+	}
 	cleaned := make(map[string][]BundleEntry, len(b))
-	for name, skills := range b {
+	for name, skillIDs := range b {
 		if name == ReservedInboxBundle {
 			continue
 		}
-		cleaned[name] = preserveStructuredEntries(current[name], dedupSorted(skills))
+		cleaned[name] = preserveStructuredEntries(name, current[name], dedupSorted(skillIDs), libSkills)
 	}
 
 	return WriteBundleEntries(cleaned)
@@ -324,7 +365,7 @@ func WriteBundleEntries(b map[string][]BundleEntry) error {
 	return os.Rename(tmp, path)
 }
 
-func preserveStructuredEntries(current []BundleEntry, wanted []string) []BundleEntry {
+func preserveStructuredEntries(bundleName string, current []BundleEntry, wanted []string, skills []Skill) []BundleEntry {
 	wantedSet := make(map[string]bool, len(wanted))
 	for _, id := range wanted {
 		wantedSet[id] = true
@@ -332,7 +373,7 @@ func preserveStructuredEntries(current []BundleEntry, wanted []string) []BundleE
 
 	var out []BundleEntry
 	for _, entry := range current {
-		ids := SourceIDsForEntries([]BundleEntry{entry})
+		ids := SourceIDsForBundleEntries(bundleName, []BundleEntry{entry}, skills)
 		if len(ids) == 0 || !allWanted(ids, wantedSet) {
 			continue
 		}
