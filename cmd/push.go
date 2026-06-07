@@ -26,18 +26,16 @@ var pushCmd = &cobra.Command{
 		yes, _ := cmd.Flags().GetBool("yes")
 		dirName := args[0]
 
-		exists, err := live.SkillExists(dirName)
+		liveRoot, err := live.LocateSkill(dirName)
 		if err != nil {
 			return err
 		}
-		if !exists {
-			return fmt.Errorf("~/.skills/%s does not exist", dirName)
+		if liveRoot == "" {
+			return fmt.Errorf("%s is not loaded in any live dir", dirName)
 		}
-
-		liveRoot, _ := live.LivePath()
 		src := filepath.Join(liveRoot, dirName)
 		if _, err := os.Stat(filepath.Join(src, "SKILL.md")); err != nil {
-			return fmt.Errorf("~/.skills/%s has no SKILL.md", dirName)
+			return fmt.Errorf("%s has no SKILL.md", src)
 		}
 
 		skillsDir, _ := library.SkillsPath()

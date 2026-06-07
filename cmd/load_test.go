@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,6 +161,107 @@ func TestApplyLoadPlanRestoresReloadedSkillOnFailure(t *testing.T) {
 	}
 }
 
+func TestLoadPlanExpandsRepoSkillWithBundlePrefix(t *testing.T) {
+	setupHome(t)
+
+	repoDir := filepath.Join(t.TempDir(), "gstack")
+	writeNamedSkillTree(t, repoDir, "gstack", "root")
+	writeNamedSkillTree(t, filepath.Join(repoDir, "autoplan"), "autoplan", "auto")
+	writeNamedSkillTree(t, filepath.Join(repoDir, "gstack-upgrade"), "gstack-upgrade", "upgrade")
+
+	st := &state.State{Version: 1, Loaded: map[string]state.LoadEntry{}}
+	plan, err := bundle.PlanLoad("gstack-nithin", []string{"gstack-nithin"}, []library.Skill{
+		{ID: "gstack-nithin", DirName: "gstack-nithin", SrcPath: repoDir},
+	}, st)
+	if err != nil {
+		t.Fatalf("PlanLoad: %v", err)
+	}
+	gotActions := actionNames(plan.Actions)
+	wantActions := []string{
+		"gstack-nithin:gstack-nithin",
+		"gstack-nithin-autoplan:gstack-nithin-autoplan",
+		"gstack-nithin-upgrade:gstack-nithin-upgrade",
+	}
+	if !reflect.DeepEqual(gotActions, wantActions) {
+		t.Fatalf("actions mismatch\ngot:  %#v\nwant: %#v", gotActions, wantActions)
+	}
+
+	newCount, reloaded, err := applyLoadPlan(plan, st)
+	if err != nil {
+		t.Fatalf("applyLoadPlan: %v", err)
+	}
+	if newCount != 3 || reloaded != 0 {
+		t.Fatalf("counts mismatch: new=%d reloaded=%d", newCount, reloaded)
+	}
+
+	liveRoot, err := live.LivePath()
+	if err != nil {
+		t.Fatalf("LivePath: %v", err)
+	}
+	for _, name := range []string{"gstack-nithin", "gstack-nithin-autoplan", "gstack-nithin-upgrade"} {
+		if got := readSkillName(t, filepath.Join(liveRoot, name)); got != name {
+			t.Fatalf("%s copied manifest name = %q, want %q", name, got, name)
+		}
+		if _, ok := st.Loaded[name]; !ok {
+			t.Fatalf("state missing loaded skill %q", name)
+		}
+	}
+}
+
+func TestLoadPlanLoadsFolderEntryWithPrefix(t *testing.T) {
+	setupHome(t)
+
+	skillsRoot, err := library.SkillsPath()
+	if err != nil {
+		t.Fatalf("SkillsPath: %v", err)
+	}
+	writeNamedSkillTree(t, filepath.Join(skillsRoot, "thinkhats", "1-blue-open"), "1-blue-open", "open")
+	writeNamedSkillTree(t, filepath.Join(skillsRoot, "thinkhats", "2-white"), "2-white", "white")
+
+	lib, err := library.Skills()
+	if err != nil {
+		t.Fatalf("Skills: %v", err)
+	}
+	st := &state.State{Version: 1, Loaded: map[string]state.LoadEntry{}}
+	plan, err := bundle.PlanLoadEntries("thinkhats", []library.BundleEntry{{
+		Folder: "thinkhats",
+		Prefix: "thinkhats-nithin",
+		Skills: []string{"1-blue-open", "2-white"},
+	}}, lib, st)
+	if err != nil {
+		t.Fatalf("PlanLoadEntries: %v", err)
+	}
+	gotActions := actionNames(plan.Actions)
+	wantActions := []string{
+		"thinkhats-nithin-1-blue-open:thinkhats-nithin-1-blue-open",
+		"thinkhats-nithin-2-white:thinkhats-nithin-2-white",
+	}
+	if !reflect.DeepEqual(gotActions, wantActions) {
+		t.Fatalf("actions mismatch\ngot:  %#v\nwant: %#v", gotActions, wantActions)
+	}
+
+	newCount, reloaded, err := applyLoadPlan(plan, st)
+	if err != nil {
+		t.Fatalf("applyLoadPlan: %v", err)
+	}
+	if newCount != 2 || reloaded != 0 {
+		t.Fatalf("counts mismatch: new=%d reloaded=%d", newCount, reloaded)
+	}
+
+	liveRoot, err := live.LivePath()
+	if err != nil {
+		t.Fatalf("LivePath: %v", err)
+	}
+	for _, name := range []string{"thinkhats-nithin-1-blue-open", "thinkhats-nithin-2-white"} {
+		if got := readSkillName(t, filepath.Join(liveRoot, name)); got != name {
+			t.Fatalf("%s copied manifest name = %q, want %q", name, got, name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(liveRoot, "thinkhats-nithin")); !os.IsNotExist(err) {
+		t.Fatalf("parent skill should not be loaded, stat err = %v", err)
+	}
+}
+
 func setupHome(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -199,6 +301,20 @@ func writeSkillTree(t *testing.T, dir, body string) {
 	}
 }
 
+func writeNamedSkillTree(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", dir, err)
+	}
+	manifest := "---\nname: " + name + "\n---\n# skill\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "body.txt"), []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile(body.txt): %v", err)
+	}
+}
+
 func readSkillBody(t *testing.T, dir string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, "body.txt"))
@@ -206,6 +322,29 @@ func readSkillBody(t *testing.T, dir string) string {
 		t.Fatalf("ReadFile(body.txt): %v", err)
 	}
 	return string(data)
+}
+
+func readSkillName(t *testing.T, dir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("ReadFile(SKILL.md): %v", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "name: ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "name: "))
+		}
+	}
+	t.Fatalf("SKILL.md in %s has no name field", dir)
+	return ""
+}
+
+func actionNames(actions []bundle.LoadAction) []string {
+	out := make([]string, 0, len(actions))
+	for _, action := range actions {
+		out = append(out, action.Skill.ID+":"+action.Skill.DirName)
+	}
+	return out
 }
 
 func withStdin(t *testing.T, input string, fn func()) {

@@ -12,17 +12,57 @@ import (
 )
 
 type Skill struct {
-	ID       string
-	DirName  string
-	SrcPath  string
-	External bool
-	Repo     string
+	ID           string
+	DirName      string
+	SrcPath      string
+	External     bool
+	Repo         string
+	NameOverride string
+}
+
+type BundleEntry struct {
+	Skill  string   `yaml:"skill,omitempty"`
+	Folder string   `yaml:"folder,omitempty"`
+	Prefix string   `yaml:"prefix,omitempty"`
+	Skills []string `yaml:"skills,omitempty"`
 }
 
 const ReservedInboxBundle = "inbox"
 
 type bundleFile struct {
-	Bundles map[string][]string `yaml:"bundles"`
+	Bundles map[string][]BundleEntry `yaml:"bundles"`
+}
+
+func (e *BundleEntry) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		e.Skill = strings.TrimSpace(value.Value)
+		return nil
+	case yaml.MappingNode:
+		type rawEntry BundleEntry
+		var raw rawEntry
+		if err := value.Decode(&raw); err != nil {
+			return err
+		}
+		if raw.Skill != "" && raw.Folder != "" {
+			return fmt.Errorf("bundle entry cannot set both skill and folder")
+		}
+		if raw.Skill == "" && raw.Folder == "" {
+			return fmt.Errorf("bundle entry must set skill or folder")
+		}
+		*e = BundleEntry(raw)
+		return nil
+	default:
+		return fmt.Errorf("unsupported bundle entry")
+	}
+}
+
+func (e BundleEntry) MarshalYAML() (any, error) {
+	if e.Skill != "" && e.Folder == "" && e.Prefix == "" && len(e.Skills) == 0 {
+		return e.Skill, nil
+	}
+	type rawEntry BundleEntry
+	return rawEntry(e), nil
 }
 
 func LibraryPath() (string, error) {
@@ -145,8 +185,8 @@ func FindSkill(id string) (*Skill, error) {
 	return nil, fmt.Errorf("skill %q not found in library", id)
 }
 
-func Bundles() (map[string][]string, error) {
-	bundles, err := readPersistedBundles()
+func BundleEntries() (map[string][]BundleEntry, error) {
+	bundles, err := readPersistedBundleEntries()
 	if err != nil {
 		return nil, err
 	}
@@ -159,16 +199,16 @@ func Bundles() (map[string][]string, error) {
 		if name == ReservedInboxBundle {
 			continue
 		}
-		for _, id := range ids {
+		for _, id := range SourceIDsForEntries(ids) {
 			assigned[id] = true
 		}
 	}
-	var inbox []string
+	var inbox []BundleEntry
 	for _, skill := range skills {
 		if assigned[skill.ID] {
 			continue
 		}
-		inbox = append(inbox, skill.ID)
+		inbox = append(inbox, BundleEntry{Skill: skill.ID})
 	}
 	if len(inbox) > 0 {
 		bundles[ReservedInboxBundle] = inbox
@@ -176,7 +216,46 @@ func Bundles() (map[string][]string, error) {
 	return bundles, nil
 }
 
-func readPersistedBundles() (map[string][]string, error) {
+func Bundles() (map[string][]string, error) {
+	entries, err := BundleEntries()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]string, len(entries))
+	for name, ids := range entries {
+		out[name] = SourceIDsForEntries(ids)
+	}
+	return out, nil
+}
+
+func SourceIDsForEntries(entries []BundleEntry) []string {
+	var out []string
+	for _, entry := range entries {
+		switch {
+		case entry.Skill != "":
+			out = append(out, entry.Skill)
+		case entry.Folder != "":
+			if len(entry.Skills) > 0 {
+				for _, skill := range entry.Skills {
+					out = append(out, folderChildID(entry.Folder, skill))
+				}
+			} else {
+				out = append(out, sourceIDsForFolder(entry.Folder)...)
+			}
+		}
+	}
+	return dedupSorted(out)
+}
+
+func BundleEntriesForSkills(ids []string) []BundleEntry {
+	out := make([]BundleEntry, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, BundleEntry{Skill: id})
+	}
+	return out
+}
+
+func readPersistedBundleEntries() (map[string][]BundleEntry, error) {
 	path, err := BundlesPath()
 	if err != nil {
 		return nil, err
@@ -184,7 +263,7 @@ func readPersistedBundles() (map[string][]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return map[string][]string{}, nil
+			return map[string][]BundleEntry{}, nil
 		}
 		return nil, fmt.Errorf("reading bundles.yaml: %w", err)
 	}
@@ -193,7 +272,7 @@ func readPersistedBundles() (map[string][]string, error) {
 		return nil, fmt.Errorf("parsing bundles.yaml: %w", err)
 	}
 	if f.Bundles == nil {
-		f.Bundles = map[string][]string{}
+		f.Bundles = map[string][]BundleEntry{}
 	}
 	return f.Bundles, nil
 }
@@ -202,17 +281,34 @@ func WriteBundles(b map[string][]string) error {
 	if err := EnsureLibrary(); err != nil {
 		return err
 	}
+
+	current, _ := readPersistedBundleEntries()
+	cleaned := make(map[string][]BundleEntry, len(b))
+	for name, skills := range b {
+		if name == ReservedInboxBundle {
+			continue
+		}
+		cleaned[name] = preserveStructuredEntries(current[name], dedupSorted(skills))
+	}
+
+	return WriteBundleEntries(cleaned)
+}
+
+func WriteBundleEntries(b map[string][]BundleEntry) error {
+	if err := EnsureLibrary(); err != nil {
+		return err
+	}
 	path, err := BundlesPath()
 	if err != nil {
 		return err
 	}
 
-	cleaned := make(map[string][]string, len(b))
-	for name, skills := range b {
+	cleaned := make(map[string][]BundleEntry, len(b))
+	for name, entries := range b {
 		if name == ReservedInboxBundle {
 			continue
 		}
-		cleaned[name] = dedupSorted(skills)
+		cleaned[name] = entries
 	}
 
 	data, err := yaml.Marshal(bundleFile{Bundles: cleaned})
@@ -228,9 +324,96 @@ func WriteBundles(b map[string][]string) error {
 	return os.Rename(tmp, path)
 }
 
+func preserveStructuredEntries(current []BundleEntry, wanted []string) []BundleEntry {
+	wantedSet := make(map[string]bool, len(wanted))
+	for _, id := range wanted {
+		wantedSet[id] = true
+	}
+
+	var out []BundleEntry
+	for _, entry := range current {
+		ids := SourceIDsForEntries([]BundleEntry{entry})
+		if len(ids) == 0 || !allWanted(ids, wantedSet) {
+			continue
+		}
+		out = append(out, entry)
+		for _, id := range ids {
+			delete(wantedSet, id)
+		}
+	}
+
+	var remaining []string
+	for id := range wantedSet {
+		remaining = append(remaining, id)
+	}
+	sort.Strings(remaining)
+	for _, id := range remaining {
+		out = append(out, BundleEntry{Skill: id})
+	}
+	return out
+}
+
+func allWanted(ids []string, wanted map[string]bool) bool {
+	for _, id := range ids {
+		if !wanted[id] {
+			return false
+		}
+	}
+	return true
+}
+
 func hasSkillManifest(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, "SKILL.md"))
 	return err == nil
+}
+
+func sourceIDsForFolder(folder string) []string {
+	root, err := SkillsPath()
+	if err != nil {
+		return nil
+	}
+	folderRoot := filepath.Join(root, filepath.FromSlash(folder))
+	var out []string
+	err = filepath.WalkDir(folderRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path != folderRoot && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != "SKILL.md" {
+			return nil
+		}
+		dir := filepath.Dir(path)
+		rel, err := filepath.Rel(folderRoot, dir)
+		if err != nil {
+			return nil
+		}
+		if rel == "." {
+			out = append(out, folder)
+			return nil
+		}
+		out = append(out, folder+"/"+filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil
+	}
+	return dedupSorted(out)
+}
+
+func folderChildID(folder, skill string) string {
+	skill = strings.Trim(strings.TrimSpace(skill), "/")
+	if skill == "" || skill == "." {
+		return folder
+	}
+	if strings.HasPrefix(skill, folder+"/") {
+		return skill
+	}
+	return folder + "/" + skill
 }
 
 func dedupSorted(in []string) []string {

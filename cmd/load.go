@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -37,6 +35,10 @@ dir would be replaced for some other reason, load asks before overwriting it.`,
 		if err != nil {
 			return err
 		}
+		bundleEntries, err := library.BundleEntries()
+		if err != nil {
+			return err
+		}
 		lib, err := library.Skills()
 		if err != nil {
 			return err
@@ -67,11 +69,11 @@ dir would be replaced for some other reason, load asks before overwriting it.`,
 		totalNew, totalReloaded := 0, 0
 
 		for _, name := range chosen {
-			skills, ok := bundles[name]
+			entries, ok := bundleEntries[name]
 			if !ok {
 				return fmt.Errorf("bundle %q not found", name)
 			}
-			plan, err := bundle.PlanLoad(name, skills, lib, st)
+			plan, err := bundle.PlanLoadEntries(name, entries, lib, st)
 			if err != nil {
 				return err
 			}
@@ -127,7 +129,7 @@ dir would be replaced for some other reason, load asks before overwriting it.`,
 type loadRollback struct {
 	skillID       string
 	dirName       string
-	backupPath    string
+	backups       []live.Backup
 	previousState map[string]state.LoadEntry
 }
 
@@ -153,15 +155,16 @@ func applyLoadPlan(plan bundle.LoadPlan, st *state.State) (newCount, reloaded in
 			previousState: snapshotLoadState(st, action.Skill.ID, action.Skill.DirName),
 		}
 		if existingOnDisk {
-			rollback.backupPath, err = backupLiveSkill(action.Skill.DirName)
+			rollback.backups, err = live.BackupSkill(action.Skill.DirName)
 			if err != nil {
 				rollbackLoadPlan(applied, st)
 				return 0, 0, err
 			}
 		}
 
-		if err := live.CopySkill(action.Skill.SrcPath, action.Skill.DirName); err != nil {
-			if restoreErr := restoreLiveSkill(action.Skill.DirName, rollback.backupPath); restoreErr != nil {
+		if err := live.CopySkillWithName(action.Skill.SrcPath, action.Skill.DirName, action.Skill.NameOverride); err != nil {
+			_ = live.RemoveSkill(action.Skill.DirName)
+			if restoreErr := live.RestoreSkill(rollback.backups); restoreErr != nil {
 				rollbackLoadPlan(applied, st)
 				return 0, 0, fmt.Errorf("%w (restore failed: %v)", err, restoreErr)
 			}
@@ -186,7 +189,7 @@ func rollbackLoadPlan(applied []loadRollback, st *state.State) {
 	for i := len(applied) - 1; i >= 0; i-- {
 		step := applied[i]
 		_ = live.RemoveSkill(step.dirName)
-		if err := restoreLiveSkill(step.dirName, step.backupPath); err == nil {
+		if err := live.RestoreSkill(step.backups); err == nil {
 			restoreLoadState(st, step)
 		}
 	}
@@ -199,10 +202,7 @@ func stateHas(st *state.State, id string) bool {
 
 func cleanupLoadBackups(applied []loadRollback) {
 	for _, step := range applied {
-		if step.backupPath == "" {
-			continue
-		}
-		_ = os.RemoveAll(step.backupPath)
+		live.CleanupBackups(step.backups)
 	}
 }
 
@@ -268,40 +268,6 @@ func loadReplacePrompt(skill library.Skill, claimedIDs []string) string {
 		return fmt.Sprintf("Skill dir %q is currently used by loaded skill %q. Replace it with %q?", skill.DirName, claimedIDs[0], skill.ID)
 	}
 	return fmt.Sprintf("Skill dir %q is currently used by loaded skills %s. Replace it with %q?", skill.DirName, strings.Join(claimedIDs, ", "), skill.ID)
-}
-
-func backupLiveSkill(dirName string) (string, error) {
-	root, err := live.LivePath()
-	if err != nil {
-		return "", err
-	}
-	target := filepath.Join(root, dirName)
-	backupPath, err := os.MkdirTemp(root, "."+dirName+".skl-backup-*")
-	if err != nil {
-		return "", err
-	}
-	if err := os.RemoveAll(backupPath); err != nil {
-		return "", err
-	}
-	if err := os.Rename(target, backupPath); err != nil {
-		return "", err
-	}
-	return backupPath, nil
-}
-
-func restoreLiveSkill(dirName, backupPath string) error {
-	if backupPath == "" {
-		return nil
-	}
-	root, err := live.LivePath()
-	if err != nil {
-		return err
-	}
-	target := filepath.Join(root, dirName)
-	if err := os.RemoveAll(target); err != nil {
-		return err
-	}
-	return os.Rename(backupPath, target)
 }
 
 func pickBundles(bundles map[string][]string, prompt string) ([]string, error) {

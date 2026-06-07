@@ -28,10 +28,6 @@ library.`,
 		if err := library.EnsureLibrary(); err != nil {
 			return err
 		}
-		liveRoot, err := live.LivePath()
-		if err != nil {
-			return err
-		}
 		dirs, err := live.LoadedDirs()
 		if err != nil {
 			return err
@@ -43,6 +39,13 @@ library.`,
 
 		imported, skipped := 0, 0
 		for _, d := range dirs {
+			liveRoot, err := live.LocateSkill(d)
+			if err != nil {
+				return err
+			}
+			if liveRoot == "" {
+				continue
+			}
 			src := filepath.Join(liveRoot, d)
 			if _, err := os.Stat(filepath.Join(src, "SKILL.md")); err != nil {
 				continue

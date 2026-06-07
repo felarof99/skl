@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Sync           SyncConfig `yaml:"sync"`
 	DefaultBundles []string   `yaml:"default_bundles,omitempty"`
+	LiveDirs       []string   `yaml:"live_dirs,omitempty"`
 }
 
 type SyncConfig struct {
