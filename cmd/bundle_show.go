@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"skl/internal/bundle"
 	"skl/internal/library"
 	"skl/internal/state"
 	"skl/internal/style"
@@ -32,6 +33,10 @@ func renderBundle(args []string) error {
 	if err != nil {
 		return err
 	}
+	bundleEntries, err := library.BundleEntries()
+	if err != nil {
+		return err
+	}
 	skills, err := library.Skills()
 	if err != nil {
 		return err
@@ -54,47 +59,32 @@ func renderBundle(args []string) error {
 		}
 	}
 
-	byID := make(map[string]library.Skill, len(skills))
-	for _, s := range skills {
-		byID[s.ID] = s
-	}
 	for _, name := range chosen {
-		ids, ok := bundles[name]
+		entries, ok := bundleEntries[name]
 		if !ok {
 			return fmt.Errorf("bundle %q not found", name)
 		}
-		printBundleSkills(name, ids, byID, st)
+		plan, err := bundle.PlanLoadEntries(name, entries, skills, st)
+		if err != nil {
+			return err
+		}
+		printBundleSkills(name, plan.Actions, st)
 	}
 	return nil
 }
 
-func printBundleSkills(name string, ids []string, byID map[string]library.Skill, st *state.State) {
+func printBundleSkills(name string, actions []bundle.LoadAction, st *state.State) {
 	loaded := style.Faint("—")
 	if isBundleLoaded(name, st) {
 		loaded = style.OK("loaded")
 	}
 	fmt.Printf("%s %s  %s\n", style.Header("Bundle:"), name, loaded)
-	if len(ids) == 0 {
+	if len(actions) == 0 {
 		fmt.Println(style.Faint("  (empty)"))
 		return
 	}
 
-	var rows [][]string
-	loadedSources := loadedSourcePaths(st)
-	for _, id := range ids {
-		mark := style.Faint("—")
-		s, ok := byID[id]
-		if ok && skillLoaded(s, st, loadedSources) {
-			mark = style.OK("loaded")
-		}
-		src := style.Faint("local")
-		if ok && s.External {
-			src = style.Faint("pack: " + s.Repo)
-		} else if !ok {
-			src = style.Faint("missing")
-		}
-		rows = append(rows, []string{id, mark, src})
-	}
+	rows := bundleSkillRows(actions, st)
 	t := table.New().
 		Border(lipgloss.HiddenBorder()).
 		Headers("SKILL", "STATUS", "SOURCE").
@@ -107,6 +97,24 @@ func printBundleSkills(name string, ids []string, byID map[string]library.Skill,
 			return s
 		})
 	fmt.Println(t)
+}
+
+func bundleSkillRows(actions []bundle.LoadAction, st *state.State) [][]string {
+	rows := make([][]string, 0, len(actions))
+	loadedSources := loadedSourcePaths(st)
+	for _, action := range actions {
+		s := action.Skill
+		mark := style.Faint("—")
+		if skillLoaded(s, st, loadedSources) {
+			mark = style.OK("loaded")
+		}
+		src := style.Faint("local")
+		if s.External {
+			src = style.Faint("pack: " + s.Repo)
+		}
+		rows = append(rows, []string{s.ID, mark, src})
+	}
+	return rows
 }
 
 func isBundleLoaded(name string, st *state.State) bool {
